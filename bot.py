@@ -9,12 +9,15 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
 import aiohttp
 
+from dispatcher import MessageDispatcher
+
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 SERVER_URL = os.getenv("SERVER_URL", "http://localhost:8000")
 
 logging.basicConfig(level=logging.INFO)
 
 router = Router()
+dispatcher: MessageDispatcher | None = None
 
 
 async def send_to_server(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -30,41 +33,6 @@ async def send_to_server(payload: Dict[str, Any]) -> Dict[str, Any]:
         logging.exception("Failed to reach server")
         return {}
 
-
-async def perform_action(event: Any, response: Dict[str, Any], bot: Bot) -> None:
-    """Execute action from server response."""
-    action = response.get("action")
-    data = response.get("data", {})
-
-    if action == "reply":
-        text = data.get("text", "")
-        if isinstance(event, Message):
-            await event.answer(text)
-        else:  # CallbackQuery
-            await event.message.answer(text)
-
-    elif action == "send_photo":
-        photo = data.get("photo")
-        caption = data.get("caption")
-        if isinstance(event, Message):
-            chat_id = event.chat.id
-        else:
-            chat_id = event.message.chat.id
-        if photo:
-            await bot.send_photo(chat_id, photo, caption=caption)
-
-    elif action:
-        # For other actions, try calling Bot methods directly
-        method = getattr(bot, action, None)
-        if callable(method):
-            if isinstance(event, Message):
-                chat_id = event.chat.id
-            else:
-                chat_id = event.message.chat.id
-            try:
-                await method(chat_id=chat_id, **data)
-            except TypeError:
-                logging.warning("Invalid parameters for action %s", action)
 
 
 async def build_message_payload(message: Message) -> Dict[str, Any]:
@@ -91,21 +59,24 @@ async def build_callback_payload(callback: CallbackQuery) -> Dict[str, Any]:
 async def start_handler(message: Message, bot: Bot) -> None:
     payload = await build_message_payload(message)
     response = await send_to_server(payload)
-    await perform_action(message, response, bot)
+    if dispatcher:
+        await dispatcher.dispatch(message, response)
 
 
 @router.message()
 async def handle_all_messages(message: Message, bot: Bot) -> None:
     payload = await build_message_payload(message)
     response = await send_to_server(payload)
-    await perform_action(message, response, bot)
+    if dispatcher:
+        await dispatcher.dispatch(message, response)
 
 
 @router.callback_query()
 async def handle_callbacks(callback: CallbackQuery, bot: Bot) -> None:
     payload = await build_callback_payload(callback)
     response = await send_to_server(payload)
-    await perform_action(callback, response, bot)
+    if dispatcher:
+        await dispatcher.dispatch(callback, response)
 
 
 def main() -> None:
@@ -116,6 +87,8 @@ def main() -> None:
     dp.include_router(router)
 
     bot = Bot(BOT_TOKEN)
+    global dispatcher
+    dispatcher = MessageDispatcher(bot)
 
     dp.run_polling(bot)
 
