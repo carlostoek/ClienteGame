@@ -1,9 +1,10 @@
 import asyncio
 import os
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Callable, Awaitable, Optional
 
 from aiogram import Bot, Dispatcher, Router, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart, Command
 import aiohttp
 
@@ -47,34 +48,87 @@ def build_payload_from_callback(callback: types.CallbackQuery) -> Dict[str, Any]
     }
 
 
-async def perform_action(target: types.Message, response: Dict[str, Any], bot: Bot) -> None:
-    action = response.get("action")
-    data = response.get("data", {})
+class ActionDispatcher:
+    """Dispatches server actions to Telegram API calls."""
 
-    if not action:
-        return
+    def __init__(self, bot: Bot) -> None:
+        self.bot = bot
+        self.handlers: Dict[str, Callable[[types.Message, Dict[str, Any]], Awaitable[Optional[types.Message]]]] = {
+            "reply": self._reply,
+            "show_menu": self._show_menu,
+            "send_photo": self._send_photo,
+            "edit_message": self._edit_message,
+            "delete_message": self._delete_message,
+        }
+        self._last_bot_message: Dict[int, types.Message] = {}
 
-    if action == "reply":
-        await target.answer(data.get("text", ""))
-        return
-    if action == "send_photo":
-        await bot.send_photo(chat_id=target.chat.id, photo=data.get("photo"), caption=data.get("caption"))
-        return
+    async def dispatch(self, target: types.Message, response: Dict[str, Any]) -> None:
+        action = response.get("action")
+        data = response.get("data", {})
+        if not action:
+            return
 
-    method = getattr(bot, action, None)
-    if method:
-        if "chat_id" not in data:
-            data["chat_id"] = target.chat.id
-        await method(**data)
-    else:
-        logger.warning("Unknown action received from server: %s", action)
+        handler = self.handlers.get(action)
+        if handler:
+            message = await handler(target, data)
+            if message:
+                self._last_bot_message[target.chat.id] = message
+        else:
+            logger.warning("Unknown action received from server: %s", action)
+
+    async def _reply(self, target: types.Message, data: Dict[str, Any]) -> Optional[types.Message]:
+        return await target.answer(data.get("text", ""))
+
+    async def _show_menu(self, target: types.Message, data: Dict[str, Any]) -> Optional[types.Message]:
+        buttons = [
+            [InlineKeyboardButton(text=btn.get("text", ""), callback_data=btn.get("callback_data", ""))]
+            for btn in data.get("buttons", [])
+        ]
+        markup = InlineKeyboardMarkup(inline_keyboard=buttons) if buttons else None
+        return await target.answer(data.get("text", ""), reply_markup=markup)
+
+    async def _send_photo(self, target: types.Message, data: Dict[str, Any]) -> Optional[types.Message]:
+        return await self.bot.send_photo(
+            chat_id=target.chat.id,
+            photo=data.get("photo"),
+            caption=data.get("caption"),
+        )
+
+    async def _edit_message(self, target: types.Message, data: Dict[str, Any]) -> Optional[types.Message]:
+        message_id = data.get("message_id")
+        if not message_id:
+            last = self._last_bot_message.get(target.chat.id)
+            message_id = last.message_id if last else None
+        if not message_id:
+            return None
+        await self.bot.edit_message_text(
+            chat_id=target.chat.id,
+            message_id=message_id,
+            text=data.get("text", ""),
+        )
+        # fetch the edited message object is not trivial; return None
+        return None
+
+    async def _delete_message(self, target: types.Message, data: Dict[str, Any]) -> Optional[types.Message]:
+        message_id = data.get("message_id")
+        if not message_id:
+            last = self._last_bot_message.pop(target.chat.id, None)
+            message_id = last.message_id if last else None
+        if not message_id:
+            return None
+        await self.bot.delete_message(chat_id=target.chat.id, message_id=message_id)
+        return None
+
+
+action_dispatcher: Optional[ActionDispatcher] = None
 
 
 @router.message(CommandStart())
 async def start_handler(message: types.Message, bot: Bot):
     payload = build_payload_from_message(message, "command")
     response = await send_to_server(payload)
-    await perform_action(message, response, bot)
+    if action_dispatcher:
+        await action_dispatcher.dispatch(message, response)
 
 
 @router.message()
@@ -82,14 +136,16 @@ async def universal_message_handler(message: types.Message, bot: Bot):
     message_type = "command" if message.text and message.text.startswith("/") else "text"
     payload = build_payload_from_message(message, message_type)
     response = await send_to_server(payload)
-    await perform_action(message, response, bot)
+    if action_dispatcher:
+        await action_dispatcher.dispatch(message, response)
 
 
 @router.callback_query()
 async def callback_handler(callback: types.CallbackQuery, bot: Bot):
     payload = build_payload_from_callback(callback)
     response = await send_to_server(payload)
-    await perform_action(callback.message, response, bot)
+    if action_dispatcher:
+        await action_dispatcher.dispatch(callback.message, response)
     await callback.answer()
 
 
@@ -98,6 +154,8 @@ async def main() -> None:
         raise RuntimeError("BOT_TOKEN is not set")
 
     bot = Bot(BOT_TOKEN)
+    global action_dispatcher
+    action_dispatcher = ActionDispatcher(bot)
     dp = Dispatcher()
     dp.include_router(router)
 
