@@ -2,6 +2,7 @@ import asyncio
 import os
 import logging
 from typing import Any, Dict, Callable, Awaitable, Optional
+from uuid import uuid4
 
 from aiogram import Bot, Dispatcher, Router, types
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -16,6 +17,17 @@ logger = logging.getLogger(__name__)
 
 router = Router()
 
+# Session and role management
+session_ids: Dict[int, str] = {}
+user_roles: Dict[int, str] = {}
+
+def get_session_id(chat_id: int) -> str:
+    """Return existing session ID for chat or create a new one."""
+    if chat_id not in session_ids:
+        session_ids[chat_id] = str(uuid4())
+    return session_ids[chat_id]
+
+
 async def send_to_server(payload: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{SERVER_URL.rstrip('/')}/user/webhook"
     async with aiohttp.ClientSession() as session:
@@ -29,9 +41,12 @@ async def send_to_server(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def build_payload_from_message(message: types.Message, message_type: str) -> Dict[str, Any]:
+    chat_id = message.chat.id
     return {
         "user_id": message.from_user.id if message.from_user else None,
         "username": message.from_user.username if message.from_user else None,
+        "chat_id": chat_id,
+        "session_id": get_session_id(chat_id),
         "message_type": message_type,
         "message_content": message.text or message.caption,
         "data": message.model_dump(mode="python"),
@@ -39,9 +54,12 @@ def build_payload_from_message(message: types.Message, message_type: str) -> Dic
 
 
 def build_payload_from_callback(callback: types.CallbackQuery) -> Dict[str, Any]:
+    chat_id = callback.message.chat.id
     return {
         "user_id": callback.from_user.id,
         "username": callback.from_user.username,
+        "chat_id": chat_id,
+        "session_id": get_session_id(chat_id),
         "message_type": "callback",
         "message_content": callback.data,
         "data": callback.model_dump(mode="python"),
@@ -123,10 +141,30 @@ class ActionDispatcher:
 action_dispatcher: Optional[ActionDispatcher] = None
 
 
+async def show_role_menu(target: types.Message, role: str) -> None:
+    """Show a menu based on the user's role."""
+    if role == "admin":
+        text = "Admin Main Menu"
+        buttons = [[InlineKeyboardButton(text="Manage", callback_data="admin_manage")]]
+    elif role == "vip":
+        text = "VIP User Menu"
+        buttons = [[InlineKeyboardButton(text="Premium", callback_data="vip_premium")]]
+    else:
+        text = "Free User Menu"
+        buttons = [[InlineKeyboardButton(text="Upgrade", callback_data="free_upgrade")]]
+
+    markup = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await target.answer(text, reply_markup=markup)
+
+
 @router.message(CommandStart())
 async def start_handler(message: types.Message, bot: Bot):
     payload = build_payload_from_message(message, "command")
     response = await send_to_server(payload)
+    role = response.get("user_role")
+    if role:
+        user_roles[message.chat.id] = role
+        await show_role_menu(message, role)
     if action_dispatcher:
         await action_dispatcher.dispatch(message, response)
 
@@ -136,6 +174,10 @@ async def universal_message_handler(message: types.Message, bot: Bot):
     message_type = "command" if message.text and message.text.startswith("/") else "text"
     payload = build_payload_from_message(message, message_type)
     response = await send_to_server(payload)
+    role = response.get("user_role")
+    if role:
+        user_roles[message.chat.id] = role
+        await show_role_menu(message, role)
     if action_dispatcher:
         await action_dispatcher.dispatch(message, response)
 
@@ -144,6 +186,10 @@ async def universal_message_handler(message: types.Message, bot: Bot):
 async def callback_handler(callback: types.CallbackQuery, bot: Bot):
     payload = build_payload_from_callback(callback)
     response = await send_to_server(payload)
+    role = response.get("user_role")
+    if role:
+        user_roles[callback.message.chat.id] = role
+        await show_role_menu(callback.message, role)
     if action_dispatcher:
         await action_dispatcher.dispatch(callback.message, response)
     await callback.answer()

@@ -2,7 +2,9 @@
 
 This is a simple Telegram interface bot built with [Aiogram 3.x](https://docs.aiogram.dev/).
 It forwards all user interactions to a backend server and performs the actions
-returned by that server.
+returned by that server. Starting with phase 2.1 the bot includes the `chat_id`
+and a unique `session_id` with each request. If the server replies with a
+`user_role`, the bot shows the corresponding menu (admin, VIP or free).
 
 ## Setup
 
