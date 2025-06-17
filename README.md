@@ -1,24 +1,24 @@
 # ClienteGame
 
-This is a simple Telegram interface bot built with [Aiogram 3.x](https://docs.aiogram.dev/).
-It forwards all user interactions to a backend server and performs the actions
-returned by that server.
+ClienteGame is a Telegram bot built with Aiogram 3.x. Its sole purpose is to
+act as an interface for the game server `ServidorGame`.
 
-## Setup
+When a user sends any message or presses a button, ClienteGame forwards the
+complete event data to `ServidorGame` at `/user/webhook` via a POST request.
+The server responds with an action to perform, such as sending a reply or a
+photo. ClienteGame executes this action and relays the response back to the
+user.
 
-Install dependencies:
+## Quick start
 
-```bash
-pip install -r requirements.txt
-```
-
-Export the following environment variables before running the bot:
-
-- `BOT_TOKEN` – Telegram bot token
-- `SERVER_URL` – base URL of ServidorGame (default: `http://localhost:8000`)
-
-Run the bot with:
-
-```bash
-python bot.py
-```
+1. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+2. Set the following environment variables:
+   - `BOT_TOKEN`: Telegram bot token.
+   - `SERVER_URL`: Base URL of `ServidorGame` (default: `http://localhost:8000`).
+3. Run the bot:
+   ```bash
+   python bot.py
+   ```
