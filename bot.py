@@ -125,8 +125,13 @@ action_dispatcher: Optional[ActionDispatcher] = None
 
 @router.message(CommandStart())
 async def start_handler(message: types.Message, bot: Bot):
+    checking = await message.answer("Checking your access…")
     payload = build_payload_from_message(message, "command")
     response = await send_to_server(payload)
+    try:
+        await checking.delete()
+    except Exception:
+        logger.exception("Failed to delete checking message")
     if action_dispatcher:
         await action_dispatcher.dispatch(message, response)
 
